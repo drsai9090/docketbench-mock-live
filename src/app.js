@@ -1,6 +1,9 @@
 import { cloneSeedData } from "./data.js";
+import { CRO_TEST_SEARCHES, croAddress, formatCroDate, normaliseCroResults, validateCroQuery } from "./cro.js";
 import { createFallbackDetail, renderDocumentsPage, renderIntake, renderMatterWorkspace, renderWorkflows } from "./legal-pages.js";
+import { renderDataImport, sampleImportFile } from "./import-pages.js";
 import { isTransferReadyInvoice, renderAccounts, renderClients, renderMatterLedger, renderMatterTime, renderReports, renderTimeBilling, transferRemaining } from "./operations-pages.js";
+import { moveTourIndex, shouldStartTour, TOUR_STEPS, TOUR_STORAGE_KEY } from "./tour.js";
 
 const STORAGE_KEY = "docketbench-mock-v6";
 const iconPaths = {
@@ -13,6 +16,7 @@ const iconPaths = {
   file: '<path d="M6 2h8l4 4v16H6z"/><path d="M14 2v5h5M9 13h6M9 17h6"/>',
   filter: '<path d="M4 5h16M7 12h10M10 19h4"/>',
   grid: '<rect x="3" y="3" width="7" height="7" rx="1"/><rect x="14" y="3" width="7" height="7" rx="1"/><rect x="3" y="14" width="7" height="7" rx="1"/><rect x="14" y="14" width="7" height="7" rx="1"/>',
+  help: '<circle cx="12" cy="12" r="9"/><path d="M9.6 9a2.5 2.5 0 1 1 3.9 2.1c-.9.6-1.5 1-1.5 2.4M12 17h.01"/>',
   inbox: '<path d="M4 4h16v14H4z"/><path d="M4 13h5l2 3h2l2-3h5"/>',
   mail: '<rect x="3" y="5" width="18" height="14" rx="2"/><path d="m3 7 9 6 9-6"/>',
   menu: '<path d="M4 7h16M4 12h16M4 17h16"/>',
@@ -36,6 +40,14 @@ function loadData() {
   }
 }
 
+function loadTourChoice() {
+  try {
+    return localStorage.getItem(TOUR_STORAGE_KEY);
+  } catch {
+    return null;
+  }
+}
+
 const state = {
   data: loadData(),
   mobileNav: false,
@@ -45,17 +57,23 @@ const state = {
   matterType: "All types",
   selectedDocument: "DOC-101",
   selectedIntake: "INT-0841",
+  importStage: "upload",
+  importFileType: "csv",
+  importFile: null,
   documentFolder: "all",
   workflowType: "All",
   draftMessage: "",
   accountLedger: "Client",
   selectedClient: "CL-201",
   timeView: "list",
+  tour: { active: shouldStartTour(loadTourChoice()), index: 0 },
+  cro: { query: "", results: [], loading: false, error: "", access: "test", fetchedAt: "" },
 };
 
 const navItems = [
   { id: "dashboard", label: "Overview", icon: "grid" },
   { id: "matters", label: "Matters", icon: "briefcase", count: "128" },
+  { id: "imports", label: "Data import", icon: "file" },
   { id: "intake", label: "Intake", icon: "inbox", count: "3" },
   { id: "documents", label: "Documents", icon: "file" },
   { id: "workflows", label: "Tasks & workflows", icon: "activity", count: "7" },
@@ -63,6 +81,7 @@ const navItems = [
   { id: "accounts", label: "Legal accounts", icon: "wallet", count: "2" },
   { id: "clients", label: "Clients & portal", icon: "users" },
   { id: "reports", label: "Reports", icon: "activity" },
+  { id: "cro", label: "CRO lookup", icon: "search" },
 ];
 
 function currentRoute() {
@@ -123,6 +142,7 @@ function wordmark() {
 function renderShell(content) {
   const route = currentRoute();
   const unread = state.data.notifications.filter((item) => item.unread).length;
+  const croRoute = route.page === "cro";
   return `
     <div class="app-shell ${state.mobileNav ? "nav-open" : ""}">
       <aside class="sidebar" aria-label="Primary navigation">
@@ -140,7 +160,7 @@ function renderShell(content) {
           ${navItems.map((item) => `<a href="#/${item.id}" class="nav-item ${route.page === item.id ? "active" : ""}" aria-current="${route.page === item.id ? "page" : "false"}">${icon(item.icon)}<span>${item.label}</span>${item.count ? `<small>${item.count}</small>` : ""}</a>`).join("")}
         </nav>
         <div class="sidebar-footer">
-          <div class="demo-notice"><span class="demo-dot"></span><div><strong>Safe demo mode</strong><small>Synthetic data · no live services</small></div></div>
+          <div class="demo-notice ${croRoute ? "live-notice" : ""}"><span class="demo-dot"></span><div><strong>${croRoute ? "Live registry check" : "Safe demo mode"}</strong><small>${croRoute ? "Official CRO data · read only" : "Synthetic data · no live services"}</small></div></div>
           <button class="user-card" data-action="open-profile">
             <span class="avatar">${escapeHtml(state.data.profile.initials)}</span>
             <span><strong>${escapeHtml(state.data.profile.user)}</strong><small>${escapeHtml(state.data.profile.role)}</small></span>
@@ -152,7 +172,7 @@ function renderShell(content) {
       <div class="workspace">
         <header class="topbar">
           <button class="icon-button mobile-menu" data-action="open-nav" aria-label="Open navigation">${icon("menu")}</button>
-          <button class="global-search" data-action="open-search" aria-label="Search matters, documents and clients">
+          <button class="global-search" data-action="open-search" data-tour="global-search" aria-label="Search matters, documents and clients">
             ${icon("search")}<span>Search matters, documents and clients</span><kbd>⌘ K</kbd>
           </button>
           <div class="topbar-actions">
@@ -160,6 +180,7 @@ function renderShell(content) {
             <select class="role-select" data-action="change-role" aria-label="Preview dashboard role">
               ${["Partner", "Solicitor", "Legal secretary", "Accounts"].map((role) => `<option ${state.data.profile.role === role ? "selected" : ""}>${role}</option>`).join("")}
             </select>
+            <button class="button button-secondary product-tour-button" data-action="start-tour" aria-label="Open product tour">${icon("help", 15)}<span>Product tour</span></button>
             <button class="icon-button notification-button" data-action="toggle-notifications" aria-label="Notifications, ${unread} unread">${icon("bell")}${unread ? `<span>${unread}</span>` : ""}</button>
             <button class="button button-primary" data-action="quick-add">${icon("plus", 16)}<span>Quick add</span></button>
           </div>
@@ -187,13 +208,13 @@ function renderDashboard() {
   const d = state.data;
   const greeting = new Intl.DateTimeFormat("en-IE", { weekday: "long", day: "numeric", month: "long" }).format(new Date(2026, 7, 24));
   return `
-    ${pageHeader("Good morning, Niamh", `${greeting} · Here is what needs your attention.`, `<button class="button button-secondary" data-action="open-ai-brief">${icon("sparkles", 16)}AI morning brief</button><a class="button button-primary" href="#/matters">Open matter list</a>`)}
+    ${pageHeader("Good morning, Niamh", `${greeting} · Here is what needs your attention.`, `<button class="button button-secondary" data-action="open-ai-brief">${icon("sparkles", 16)}AI morning brief</button><a class="button button-primary" href="#/matters" data-tour="first-action">Open matter list</a>`)}
     <section class="metric-grid" aria-label="Firm overview">
       ${d.metrics.map((metric) => `<button class="metric-card" data-action="metric" data-metric="${metric.id}"><span class="metric-icon tone-${metric.tone}">${icon(metric.icon)}</span><span class="metric-copy"><small>${metric.label}</small><strong>${metric.value}</strong><em class="tone-text-${metric.tone}">${metric.delta}</em></span>${icon("chevron", 16)}</button>`).join("")}
     </section>
     <div class="dashboard-grid">
       <section class="panel priority-panel">
-        <div class="section-header"><div><p class="section-kicker">AI triage</p><h2>Priorities requiring review</h2></div><span class="ai-label">${icon("sparkles", 14)}Explainable suggestions</span></div>
+        <div class="section-header" data-tour="dashboard-priorities"><div><p class="section-kicker">AI triage</p><h2>Priorities requiring review</h2></div><span class="ai-label">${icon("sparkles", 14)}Explainable suggestions</span></div>
         <div class="priority-list">
           ${d.priorities.map((item) => `<article class="priority-item"><span class="priority-mark priority-${item.tone}">${icon(item.tone === "danger" ? "calendar" : item.tone === "warning" ? "wallet" : "sparkles")}</span><div><p>${escapeHtml(item.kind)}</p><h3>${escapeHtml(item.title)}</h3><small>${escapeHtml(item.detail)}</small></div><button class="button button-quiet" data-action="priority" data-id="${item.id}">${item.action}${icon("chevron", 14)}</button></article>`).join("")}
         </div>
@@ -228,7 +249,7 @@ function renderMatters() {
   return `
     ${pageHeader("Matters", "A single view of case progress, ownership, deadlines and financial context.", `<button class="button button-secondary" data-action="export-matters">Export view</button><button class="button button-primary" data-action="new-matter">${icon("plus", 16)}New matter</button>`)}
     <section class="panel table-panel">
-      <div class="table-toolbar">
+      <div class="table-toolbar" data-tour="matter-list">
         <label class="search-field">${icon("search", 16)}<span class="sr-only">Search matters</span><input type="search" data-action="matter-search" value="${escapeHtml(state.matterQuery)}" placeholder="Search reference, client or matter…" /></label>
         <label class="select-field">${icon("filter", 16)}<span class="sr-only">Filter by matter type</span><select data-action="matter-type">${types.map((type) => `<option ${type === state.matterType ? "selected" : ""}>${type}</option>`).join("")}</select></label>
         <div class="toolbar-spacer"></div><span class="result-count">${matters.length} spotlight matters · 128 total</span>
@@ -248,11 +269,60 @@ function renderPlaceholder(page) {
   return `${pageHeader(item?.label || "Workspace", "This workspace is being added in the next prototype slice.")}<section class="panel placeholder-panel"><span class="metric-icon tone-navy">${icon(item?.icon || "activity", 22)}</span><h2>${item?.label || "Workspace"}</h2><p>The navigation is in place so the full end-to-end prototype keeps a stable information architecture while each operational workspace is delivered.</p><a class="button button-secondary" href="#/dashboard">Return to overview</a></section>`;
 }
 
+function croStatusTone(status = "") {
+  const value = status.trim().toLowerCase();
+  if (value === "normal") return "success";
+  if (value.includes("dissolved") || value.includes("strike")) return "danger";
+  return "warning";
+}
+
+function renderCroLookup() {
+  const { query, results, loading, error, access, fetchedAt } = state.cro;
+  const accessLabel = access === "full" ? "Registered access" : "Test access";
+  const fetchedLabel = fetchedAt ? new Intl.DateTimeFormat("en-IE", { hour: "2-digit", minute: "2-digit", second: "2-digit" }).format(new Date(fetchedAt)) : "Not checked yet";
+  const resultsContent = loading
+    ? `<div class="cro-loading" role="status"><span class="spinner"></span><div><strong>Checking CRO Open Services</strong><small>Searching the live Irish company register…</small></div></div>`
+    : error
+      ? `<div class="cro-message cro-error" role="alert"><span>!</span><div><strong>Search could not be completed</strong><p>${escapeHtml(error)}</p></div></div>`
+      : results.length
+        ? `<div class="cro-results-heading"><div><strong>${results.length} ${results.length === 1 ? "company" : "companies"} found</strong><small>Live response · checked ${escapeHtml(fetchedLabel)}</small></div><span class="badge badge-success"><span></span>CRO response received</span></div>
+          <div class="table-scroll cro-table-scroll"><table class="cro-table"><thead><tr><th>Company</th><th>Status</th><th>Registered address</th><th>Company type</th><th>Registered</th></tr></thead><tbody>${results.map((company) => `<tr><td><div class="matter-cell"><span class="matter-type-icon">CRO</span><span><strong>${escapeHtml(company.company_name)}</strong><small>No. ${escapeHtml(company.company_num)} · ${company.company_bus_ind === "B" ? "Business name" : "Company"}</small></span></div></td><td>${badge(String(company.company_status_desc || "Not recorded").trim(), croStatusTone(company.company_status_desc))}</td><td class="cro-address">${escapeHtml(croAddress(company))}</td><td><strong>${escapeHtml(company.comp_type_desc || "Not recorded")}</strong><small>${company.place_of_business ? `Place of business: ${escapeHtml(company.place_of_business)}` : ""}</small></td><td><strong>${escapeHtml(formatCroDate(company.company_reg_date))}</strong><small>Next return: ${escapeHtml(formatCroDate(company.next_ar_date))}</small></td></tr>`).join("")}</tbody></table></div>`
+        : query
+          ? `<div class="empty-state">${icon("search", 24)}<h3>No matching companies</h3><p>CRO returned no company records for “${escapeHtml(query)}”. Try a shorter name or a CRO number.</p></div>`
+          : `<div class="cro-welcome">${icon("search", 25)}<div><h3>Run a live registry check</h3><p>Search by company name or CRO number. The result will show the registered name, number, status, address, type and key dates returned by CRO.</p></div></div>`;
+
+  return `
+    ${pageHeader("CRO company lookup", "Check a company against live public data from Ireland’s Companies Registration Office.", `<a class="button button-secondary" href="https://services.cro.ie/" target="_blank" rel="noopener">CRO service information${icon("chevron", 14)}</a>`)}
+    <div class="cro-layout" data-tour="cro-lookup">
+      <section class="panel cro-main-panel">
+        <div class="section-header"><div><p class="section-kicker">Live public registry</p><h2>Search CRO Open Services</h2></div><span class="cro-access ${access === "full" ? "is-full" : ""}"><span></span>${accessLabel}</span></div>
+        <form class="cro-search-form" data-action="cro-search">
+          <label><span>Company name or CRO number</span><div class="cro-input">${icon("search", 17)}<input name="name" type="search" minlength="2" maxlength="120" autocomplete="off" value="${escapeHtml(query)}" placeholder="e.g. Ryanair or 83740" required /></div></label>
+          <button class="button button-primary" type="submit" ${loading ? "disabled" : ""}>${loading ? "Searching…" : "Search CRO"}</button>
+        </form>
+        ${access === "test" ? `<div class="cro-test-strip"><div><strong>Published CRO test access</strong><span>General names need registered API credentials. These permitted searches work now:</span></div><div>${CRO_TEST_SEARCHES.map((example) => `<button type="button" data-action="cro-example" data-query="${example}">${example}</button>`).join("")}</div></div>` : ""}
+        <div class="cro-results" aria-live="polite">${resultsContent}</div>
+      </section>
+      <aside class="panel cro-info-panel">
+        <div class="section-header"><div><p class="section-kicker">Connection</p><h2>What this checks</h2></div><span class="metric-icon tone-teal">${icon("activity", 18)}</span></div>
+        <dl class="cro-facts">
+          <div><dt>Data source</dt><dd>CRO Open Services</dd></div>
+          <div><dt>Access</dt><dd>${accessLabel}</dd></div>
+          <div><dt>Last checked</dt><dd>${escapeHtml(fetchedLabel)}</dd></div>
+          <div><dt>Request path</dt><dd>Local server proxy</dd></div>
+        </dl>
+        <div class="cro-note"><strong>Read only</strong><p>The company name is sent to CRO when you select Search. API credentials remain on the local server and are never returned to the browser.</p></div>
+        <div class="cro-note cro-note-neutral"><strong>Registry result, not legal advice</strong><p>Confirm critical information through the appropriate CRO record or filing before relying on it in a matter.</p></div>
+      </aside>
+    </div>`;
+}
+
 function renderPage() {
   const route = currentRoute();
   const context = { state, icon, escapeHtml, badge, pageHeader, renderMatterTime, renderMatterLedger };
   if (route.page === "dashboard") return renderDashboard();
   if (route.page === "matters") return route.id ? renderMatterWorkspace(context, route.id, route.params.get("tab") || "overview") : renderMatters();
+  if (route.page === "imports") return renderDataImport(context);
   if (route.page === "intake") return renderIntake(context);
   if (route.page === "documents") return renderDocumentsPage(context);
   if (route.page === "workflows") return renderWorkflows(context);
@@ -260,6 +330,7 @@ function renderPage() {
   if (route.page === "accounts") return renderAccounts(context);
   if (route.page === "clients") return renderClients(context);
   if (route.page === "reports") return renderReports(context);
+  if (route.page === "cro") return renderCroLookup();
   return renderPlaceholder(route.page);
 }
 
@@ -350,6 +421,191 @@ function showToast(message, tone = "success") {
   showToast.timer = setTimeout(() => { region.innerHTML = ""; }, 4500);
 }
 
+let tourPositionFrame;
+
+function setTourInert(active) {
+  ["#app", "#modal-root"].forEach((selector) => {
+    const region = document.querySelector(selector);
+    if (region) region.inert = active;
+  });
+}
+
+function rememberTour(choice) {
+  try {
+    localStorage.setItem(TOUR_STORAGE_KEY, choice);
+  } catch {
+    // The walkthrough still works when storage is unavailable.
+  }
+}
+
+function centerTourCard(card, spotlight, showFallback = false) {
+  spotlight.hidden = false;
+  spotlight.classList.add("is-backdrop");
+  Object.assign(spotlight.style, { left: "50%", top: "50%", width: "0", height: "0" });
+  card.classList.add("is-centered");
+  card.classList.remove("is-mobile");
+  card.removeAttribute("style");
+  const fallback = card.querySelector(".tour-fallback");
+  if (fallback) fallback.hidden = !showFallback;
+}
+
+function positionTour(attempt = 0) {
+  if (!state.tour.active) return;
+  const step = TOUR_STEPS[state.tour.index];
+  const card = document.querySelector(".tour-card");
+  const spotlight = document.querySelector(".tour-spotlight");
+  if (!card || !spotlight) return;
+  if (!step.target) {
+    centerTourCard(card, spotlight);
+    return;
+  }
+
+  const target = document.querySelector(`[data-tour="${step.target}"]`);
+  const rect = target?.getBoundingClientRect();
+  if (!target || !rect || rect.width < 1 || rect.height < 1) {
+    if (attempt < 4) setTimeout(() => positionTour(attempt + 1), 70);
+    else centerTourCard(card, spotlight, true);
+    return;
+  }
+
+  const viewportWidth = window.innerWidth;
+  const viewportHeight = window.innerHeight;
+  const visible = rect.bottom > 72 && rect.top < viewportHeight - 12 && rect.right > 12 && rect.left < viewportWidth - 12;
+  if (!visible && attempt < 2) {
+    target.scrollIntoView({ block: "center", behavior: window.matchMedia("(prefers-reduced-motion: reduce)").matches ? "auto" : "smooth" });
+    setTimeout(() => positionTour(attempt + 1), 220);
+    return;
+  }
+
+  const margin = 8;
+  const left = Math.max(margin, rect.left - 6);
+  const top = Math.max(margin, rect.top - 6);
+  const right = Math.min(viewportWidth - margin, rect.right + 6);
+  const bottom = Math.min(viewportHeight - margin, rect.bottom + 6);
+  Object.assign(spotlight.style, { left: `${left}px`, top: `${top}px`, width: `${Math.max(1, right - left)}px`, height: `${Math.max(1, bottom - top)}px` });
+  spotlight.hidden = false;
+  spotlight.classList.remove("is-backdrop");
+  card.classList.remove("is-centered");
+  const fallback = card.querySelector(".tour-fallback");
+  if (fallback) fallback.hidden = true;
+
+  if (viewportWidth <= 720) {
+    card.classList.add("is-mobile");
+    card.removeAttribute("style");
+    return;
+  }
+
+  card.classList.remove("is-mobile");
+  card.removeAttribute("style");
+  const cardRect = card.getBoundingClientRect();
+  const gap = 18;
+  const clamp = (value, min, max) => Math.min(Math.max(value, min), max);
+  const positions = {
+    bottom: { top: bottom + gap, left: clamp((left + right - cardRect.width) / 2, 12, viewportWidth - cardRect.width - 12) },
+    top: { top: top - cardRect.height - gap, left: clamp((left + right - cardRect.width) / 2, 12, viewportWidth - cardRect.width - 12) },
+    right: { top: clamp((top + bottom - cardRect.height) / 2, 12, viewportHeight - cardRect.height - 12), left: right + gap },
+    left: { top: clamp((top + bottom - cardRect.height) / 2, 12, viewportHeight - cardRect.height - 12), left: left - cardRect.width - gap },
+  };
+  const ordered = [...new Set([step.placement, "bottom", "top", "right", "left"].filter(Boolean))];
+  const placement = ordered.map((name) => positions[name]).find((item) => item.top >= 12 && item.left >= 12 && item.top + cardRect.height <= viewportHeight - 12 && item.left + cardRect.width <= viewportWidth - 12)
+    || { top: clamp((viewportHeight - cardRect.height) / 2, 12, viewportHeight - cardRect.height - 12), left: clamp((viewportWidth - cardRect.width) / 2, 12, viewportWidth - cardRect.width - 12) };
+  card.style.top = `${placement.top}px`;
+  card.style.left = `${placement.left}px`;
+}
+
+function renderTour() {
+  const root = document.querySelector("#tour-root");
+  if (!root) return;
+  if (!state.tour.active) {
+    root.innerHTML = "";
+    setTourInert(false);
+    return;
+  }
+
+  const step = TOUR_STEPS[state.tour.index];
+  const last = state.tour.index === TOUR_STEPS.length - 1;
+  const nextLabel = state.tour.index === 0 ? "Start tour" : last ? "Finish" : "Next";
+  root.innerHTML = `
+    <div class="tour-overlay">
+      <div class="tour-spotlight" aria-hidden="true"></div>
+      <section class="tour-card is-centered" role="dialog" aria-modal="true" aria-labelledby="tour-title" aria-describedby="tour-description">
+        <div class="tour-card-top">
+          <span>Interactive guide</span>
+          <button class="icon-button" data-action="tour-close" aria-label="Close product tour">${icon("x", 16)}</button>
+        </div>
+        <div class="tour-progress" aria-hidden="true"><span style="width:${Math.round((state.tour.index + 1) / TOUR_STEPS.length * 100)}%"></span></div>
+        <div class="tour-copy">
+          <p>Step ${state.tour.index + 1} of ${TOUR_STEPS.length}</p>
+          <h2 id="tour-title" tabindex="-1">${escapeHtml(step.title)}</h2>
+          <p id="tour-description">${escapeHtml(step.body)}</p>
+          <p class="tour-fallback" hidden>This area is not visible in the current layout. Continue to keep exploring.</p>
+        </div>
+        <div class="tour-actions">
+          ${last ? "" : `<button class="text-button" data-action="tour-skip">Skip tour</button>`}
+          <span></span>
+          ${state.tour.index ? `<button class="button button-secondary" data-action="tour-back">Back</button>` : ""}
+          <button class="button button-primary" data-action="tour-next">${nextLabel}</button>
+        </div>
+      </section>
+    </div>`;
+  setTourInert(true);
+  requestAnimationFrame(() => {
+    positionTour();
+    document.querySelector("#tour-title")?.focus({ preventScroll: true });
+  });
+}
+
+function showTourStep(index) {
+  state.tour.index = Math.max(0, Math.min(TOUR_STEPS.length - 1, index));
+  state.modal = null;
+  state.mobileNav = false;
+  state.notificationsOpen = false;
+  const route = TOUR_STEPS[state.tour.index].route;
+  if (location.hash !== route) location.hash = route;
+  else render();
+}
+
+function startTour() {
+  state.tour.active = true;
+  showTourStep(0);
+}
+
+function dismissTour(choice) {
+  rememberTour(choice);
+  state.tour.active = false;
+  renderTour();
+  requestAnimationFrame(() => document.querySelector(choice === "finished" ? '[data-tour="first-action"]' : '[data-action="start-tour"]')?.focus());
+}
+
+function moveTour(direction) {
+  if (direction > 0 && state.tour.index === TOUR_STEPS.length - 1) {
+    dismissTour("finished");
+    return;
+  }
+  showTourStep(moveTourIndex(state.tour.index, direction));
+}
+
+function trapTourFocus(event) {
+  const root = document.querySelector("#tour-root");
+  const focusable = [...(root?.querySelectorAll("button:not([disabled])") || [])];
+  if (!focusable.length) return;
+  const first = focusable[0];
+  const last = focusable.at(-1);
+  if (event.shiftKey && (document.activeElement === first || !root.contains(document.activeElement))) {
+    event.preventDefault();
+    last.focus();
+  } else if (!event.shiftKey && document.activeElement === last) {
+    event.preventDefault();
+    first.focus();
+  }
+}
+
+function scheduleTourPosition() {
+  if (!state.tour.active) return;
+  cancelAnimationFrame(tourPositionFrame);
+  tourPositionFrame = requestAnimationFrame(() => positionTour(4));
+}
+
 function render() {
   document.querySelector("#app").innerHTML = renderShell(renderPage());
   document.querySelector("#modal-root").innerHTML = renderModal();
@@ -385,6 +641,7 @@ function render() {
     if (selectedBadge) { selectedBadge.className = "badge badge-success"; }
   }
   if (state.modal) setTimeout(() => document.querySelector("[autofocus], [data-modal-panel] input")?.focus(), 0);
+  renderTour();
 }
 
 function closeModal() {
@@ -393,6 +650,11 @@ function closeModal() {
 }
 
 function handleAction(action, element) {
+  if (action === "start-tour") return startTour();
+  if (action === "tour-next") return moveTour(1);
+  if (action === "tour-back") return moveTour(-1);
+  if (action === "tour-skip") return dismissTour("skipped");
+  if (action === "tour-close") return dismissTour("closed");
   if (action === "open-nav") state.mobileNav = true;
   if (action === "close-nav") state.mobileNav = false;
   if (action === "toggle-notifications") state.notificationsOpen = !state.notificationsOpen;
@@ -402,6 +664,11 @@ function handleAction(action, element) {
   if (action === "new-matter") state.modal = { type: "new-matter", clientId: currentRoute().page === "clients" ? state.selectedClient : undefined };
   if (action === "close-modal") closeModal();
   if (action === "dismiss-toast") document.querySelector("#toast-region").innerHTML = "";
+  if (action === "cro-example") {
+    state.cro.query = element.dataset.query || "Ryanair";
+    render();
+    setTimeout(() => document.querySelector('form[data-action="cro-search"]')?.requestSubmit(), 0);
+  }
   if (action === "open-matter" || action === "search-result") { state.modal = null; location.hash = `#/matters/${element.dataset.id}`; }
   if (action === "priority") {
     const item = state.data.priorities.find((entry) => entry.id === element.dataset.id);
@@ -422,6 +689,21 @@ function handleAction(action, element) {
   if (action === "matter-time") location.hash = `#/matters/${element.dataset.id}?tab=time`;
   if (action === "select-doc") state.selectedDocument = element.dataset.id;
   if (action === "select-intake") state.selectedIntake = element.dataset.id;
+  if (action === "use-import-sample") state.importFile = sampleImportFile();
+  if (action === "clear-import-file") state.importFile = null;
+  if (action === "import-back") state.importStage = "upload";
+  if (action === "restart-import") { state.importStage = "upload"; state.importFile = null; }
+  if (action === "auto-map-import") showToast("Fields restored to the suggested DocketBench mapping", "info");
+  if (action === "import-continue" && state.importStage === "upload" && state.importFile) state.importStage = state.importFileType === "csv" ? "mapping" : "processing";
+  else if (action === "import-continue" && state.importStage === "mapping") state.importStage = "processing";
+  if (state.importStage === "processing" && ["import-continue"].includes(action)) {
+    setTimeout(() => {
+      if (state.importStage !== "processing") return;
+      state.importStage = "review";
+      render();
+      showToast("Mock import complete · 2 items need review");
+    }, 1100);
+  }
   if (action === "sample-import") state.modal = { type: "sample-import" };
   if (action === "run-import") {
     state.selectedIntake = "INT-0841";
@@ -703,6 +985,14 @@ document.addEventListener("input", (event) => {
 });
 
 document.addEventListener("change", (event) => {
+  if (event.target.dataset.action === "import-file-type") { state.importFileType = event.target.value; state.importFile = null; render(); }
+  if (event.target.dataset.action === "import-file") {
+    const file = event.target.files?.[0];
+    if (file) {
+      state.importFile = { name: file.name, size: file.size < 1024 ? `${file.size} B` : `${(file.size / 1024).toFixed(1)} KB` };
+      render();
+    }
+  }
   if (event.target.dataset.action === "matter-type") { state.matterType = event.target.value; render(); }
   if (event.target.dataset.action === "change-role") { state.data.profile.role = event.target.value; saveData(); render(); showToast(`Dashboard preview switched to ${event.target.value}`); }
   if (["invoice-confirm", "invoice-furnished-confirm"].includes(event.target.dataset.action)) {
@@ -736,12 +1026,41 @@ document.addEventListener("change", (event) => {
   }
 });
 
-document.addEventListener("submit", (event) => {
+document.addEventListener("submit", async (event) => {
   const form = event.target.closest("form[data-action]");
   if (!form) return;
   event.preventDefault();
   const formData = new FormData(form);
   const values = Object.fromEntries(formData);
+  if (form.dataset.action === "cro-search") {
+    const query = String(values.name || "").trim();
+    const validationError = validateCroQuery(query);
+    if (validationError) {
+      state.cro = { ...state.cro, query, results: [], error: validationError, loading: false };
+      render();
+      return;
+    }
+    state.cro = { ...state.cro, query, results: [], error: "", loading: true };
+    render();
+    try {
+      if (location.hostname.endsWith(".github.io")) throw new Error("Live CRO search needs server hosting and is unavailable in this static preview.");
+      const response = await fetch(`/api/cro/search?name=${encodeURIComponent(query)}`, { headers: { Accept: "application/json" } });
+      const payload = await response.json();
+      if (!response.ok) throw new Error(payload.error || "CRO search failed.");
+      state.cro = {
+        query,
+        results: normaliseCroResults(payload.results),
+        loading: false,
+        error: "",
+        access: payload.access || "test",
+        fetchedAt: payload.fetchedAt || new Date().toISOString(),
+      };
+    } catch (requestError) {
+      state.cro = { ...state.cro, query, results: [], loading: false, error: requestError.message || "CRO search failed." };
+    }
+    render();
+    return;
+  }
   if (form.dataset.action === "create-task") {
     state.data.tasks.push({ id: `TSK-${Date.now().toString().slice(-4)}`, title: values.title, matter: values.matter, due: values.due, owner: "You", status: "Not started", priority: "Medium" });
     saveData(); closeModal(); showToast(`Task added to ${values.matter}`);
@@ -902,12 +1221,31 @@ document.addEventListener("submit", (event) => {
 });
 
 document.addEventListener("keydown", (event) => {
+  if (state.tour.active) {
+    if (event.key === "Escape") { event.preventDefault(); dismissTour("closed"); }
+    else if (event.key === "Tab") trapTourFocus(event);
+    else if (event.key === "ArrowRight") { event.preventDefault(); moveTour(1); }
+    else if (event.key === "ArrowLeft" && state.tour.index) { event.preventDefault(); moveTour(-1); }
+    return;
+  }
   if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === "k") { event.preventDefault(); state.modal = { type: "search" }; render(); }
   if (event.key === "Escape" && state.modal) closeModal();
   if (event.key === "Enter" && event.target.matches("tr[data-action='open-matter']")) handleAction("open-matter", event.target);
 });
 
-window.addEventListener("hashchange", () => { state.mobileNav = false; state.notificationsOpen = false; state.documentFolder = "all"; state.modal = null; window.scrollTo(0, 0); render(); });
+window.addEventListener("resize", scheduleTourPosition);
+window.addEventListener("scroll", scheduleTourPosition, true);
+window.addEventListener("hashchange", () => {
+  state.mobileNav = false;
+  state.notificationsOpen = false;
+  state.documentFolder = "all";
+  state.modal = null;
+  const tourRoute = TOUR_STEPS[state.tour.index]?.route;
+  if (state.tour.active && location.hash !== tourRoute) { location.hash = tourRoute; return; }
+  window.scrollTo(0, 0);
+  render();
+});
 if (!location.hash) location.hash = "#/dashboard";
+if (state.tour.active && location.hash !== TOUR_STEPS[0].route) location.hash = TOUR_STEPS[0].route;
 render();
 setInterval(updateTimerDisplay, 1_000);
