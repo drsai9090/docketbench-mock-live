@@ -69,6 +69,7 @@ const state = {
   tour: { active: shouldStartTour(loadTourChoice()), index: 0 },
   cro: { query: "", results: [], loading: false, error: "", access: "test", fetchedAt: "" },
 };
+let workflowStudioCleanup = null;
 
 const navItems = [
   { id: "dashboard", label: "Overview", icon: "grid" },
@@ -77,6 +78,7 @@ const navItems = [
   { id: "intake", label: "Intake", icon: "inbox", count: "3" },
   { id: "documents", label: "Documents", icon: "file" },
   { id: "workflows", label: "Tasks & workflows", icon: "activity", count: "7" },
+  { id: "workflow-studio", label: "AI workflow studio", icon: "sparkles" },
   { id: "time", label: "Time & billing", icon: "clock" },
   { id: "accounts", label: "Legal accounts", icon: "wallet", count: "2" },
   { id: "clients", label: "Clients & portal", icon: "users" },
@@ -186,7 +188,7 @@ function renderShell(content) {
           </div>
           ${state.notificationsOpen ? renderNotifications() : ""}
         </header>
-        <main id="main-content" tabindex="-1">${content}</main>
+        <main id="main-content" class="${route.page === "workflow-studio" ? "workflow-studio-main" : ""}" tabindex="-1">${content}</main>
       </div>
     </div>
   `;
@@ -269,6 +271,10 @@ function renderPlaceholder(page) {
   return `${pageHeader(item?.label || "Workspace", "This workspace is being added in the next prototype slice.")}<section class="panel placeholder-panel"><span class="metric-icon tone-navy">${icon(item?.icon || "activity", 22)}</span><h2>${item?.label || "Workspace"}</h2><p>The navigation is in place so the full end-to-end prototype keeps a stable information architecture while each operational workspace is delivered.</p><a class="button button-secondary" href="#/dashboard">Return to overview</a></section>`;
 }
 
+function renderWorkflowStudio() {
+  return `<section class="workflow-studio-page"><div id="workflow-studio-root"></div></section>`;
+}
+
 function croStatusTone(status = "") {
   const value = status.trim().toLowerCase();
   if (value === "normal") return "success";
@@ -326,6 +332,7 @@ function renderPage() {
   if (route.page === "intake") return renderIntake(context);
   if (route.page === "documents") return renderDocumentsPage(context);
   if (route.page === "workflows") return renderWorkflows(context);
+  if (route.page === "workflow-studio") return renderWorkflowStudio();
   if (route.page === "time") return renderTimeBilling(context);
   if (route.page === "accounts") return renderAccounts(context);
   if (route.page === "clients") return renderClients(context);
@@ -607,8 +614,20 @@ function scheduleTourPosition() {
 }
 
 function render() {
+  workflowStudioCleanup?.();
+  workflowStudioCleanup = null;
   document.querySelector("#app").innerHTML = renderShell(renderPage());
   document.querySelector("#modal-root").innerHTML = renderModal();
+  const workflowTarget = document.querySelector("#workflow-studio-root");
+  if (workflowTarget) {
+    import("../dist/workflow-studio.js")
+      .then(({ mountWorkflowStudio }) => {
+        if (workflowTarget.isConnected) workflowStudioCleanup = mountWorkflowStudio(workflowTarget);
+      })
+      .catch(() => {
+        if (workflowTarget.isConnected) workflowTarget.innerHTML = '<div class="form-error" role="alert">The workflow studio bundle could not be loaded. Run npm run build.</div>';
+      });
+  }
   if (state.draftMessage) {
     const composer = document.querySelector('.composer textarea[name="message"]');
     if (composer) composer.value = state.draftMessage;
